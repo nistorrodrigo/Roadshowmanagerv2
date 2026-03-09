@@ -11,6 +11,11 @@ const DAYS  = ["apr14","apr15"];
 const DAY_LONG  = { apr14:"Tuesday, April 14th 2026",   apr15:"Wednesday, April 15th 2026" };
 const DAY_SHORT = { apr14:"Tue Apr 14",                 apr15:"Wed Apr 15" };
 const ALL_SLOTS = DAYS.flatMap(d=>HOURS.map(h=>`${d}-${h}`));
+const DINNER_HOUR_LABEL = "7:00 PM";
+const DINNERS_INIT = [
+  {id:"din-apr14", day:"apr14", name:"Conference Dinner", restaurant:"", address:""},
+  {id:"din-apr15", day:"apr15", name:"Conference Dinner", restaurant:"", address:""},
+];
 const slotDay  = id => id.split("-")[0];
 const slotHour = id => parseInt(id.split("-")[1]);
 const hourLabel = h => h===12?"12:00 PM":h>12?`${h-12}:00 PM`:`${h}:00 AM`;
@@ -117,12 +122,13 @@ const esc=s=>String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>
 
 function buildWordHTML(entityName, entitySub, sections, footerNote=""){
   // sections: [{dayLabel, rows: [{time, col1, col1b, col2, col3}], headerCols:[...]}]
-  const tableSections = sections.map(sec=>{
+  // One table per day with page breaks between them
+  const tableSections = sections.map((sec,si)=>{
     const nCols=sec.headerCols.length;
     const rows=sec.rows.map((r,i)=>{
       const bg=i%2===0?"#f3f5fb":"#fff";
       const room=r.col4!==undefined?r.col4:r.col3;
-      const typeColor=r.col3==="1x1"?"#2a7a4a":r.col3==="Group"?"#7b52a8":"#444";
+      const typeColor=r.col3==="1x1"?"#2a7a4a":r.col3==="Group"?"#7b52a8":r.col3==="Dinner"?"#b45309":"#444";
       const typeCell=r.col4!==undefined
         ?`<td style="padding:8px 10px;vertical-align:top;font-size:9pt;color:${typeColor};font-weight:700;white-space:nowrap">${esc(r.col3)}</td>`
         :"";
@@ -137,10 +143,13 @@ function buildWordHTML(entityName, entitySub, sections, footerNote=""){
         <td style="padding:8px 10px;vertical-align:top;font-style:italic;font-size:10pt">${esc(room)}</td>
       </tr>`;
     }).join("");
-    return `
+    const pageBreak=si>0?`<p style="page-break-before:always;margin:0;font-size:1pt">&nbsp;</p>`:"";
+    return `${pageBreak}
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px;border:1px solid #c8cdd8">
     <tr><td colspan="${nCols}" style="background:#1e3f87;color:#fff;font-weight:bold;padding:7px 12px;font-size:11pt;letter-spacing:0.04em">${esc(sec.dayLabel)}</td></tr>
     <tr style="background:#2d5cb8">${sec.headerCols.map(h=>`<th style="color:#fff;padding:7px 10px;text-align:left;font-size:9.5pt;letter-spacing:0.05em;text-transform:uppercase">${esc(h)}</th>`).join("")}</tr>
-    ${rows}`;
+    ${rows}
+    </table>`;
   }).join("");
 
   return `<!DOCTYPE html>
@@ -179,7 +188,7 @@ th,td { padding: 0; }
 </div>
 <h1>${esc(entityName)}</h1>
 <h2>${esc(entitySub)}</h2>
-<table>${tableSections}</table>
+${tableSections}
 ${footerNote?`<div class="footer-note">${esc(footerNote)}</div>`:""}
 </body>
 </html>`;
@@ -189,8 +198,8 @@ function buildPrintHTML(entities, options={}){
   // One page per entity-day: header + entity title + day table, repeated for each day
   function renderRow(r,i){
     const bg=i%2===0?"#f3f5fb":"#fff";
-    const typeColor=r.col3==="1x1"?"#2a7a4a":r.col3==="Group"?"#7b52a8":"#444";
-    const typeWeight=r.col3==="1x1"||r.col3==="Group"?"700":"400";
+    const typeColor=r.col3==="1x1"?"#2a7a4a":r.col3==="Group"?"#7b52a8":r.col3==="Dinner"?"#b45309":"#444";
+    const typeWeight=r.col3==="1x1"||r.col3==="Group"||r.col3==="Dinner"?"700":"400";
     const col1html=r.isGroup
       ?("<strong>"+r.col1.split("\n").map(n=>esc(n)).join("</strong><br/><strong>")+"</strong>")
       :("<strong>"+esc(r.col1)+"</strong>"+(r.col1b?"<br/><small>"+esc(r.col1b)+"</small>":"")+(r.col1c?"<br/><em>"+esc(r.col1c)+"</em>":""));
@@ -310,21 +319,35 @@ function companyToExportData(co, meetings, investors){
   };
 }
 
-function investorToExportData(inv, meetings, companies){
+function investorToExportData(inv, meetings, companies, dinners=[]){
   const cms = meetings.filter(m=>(m.invIds||[]).includes(inv.id))
     .sort((a,b)=>ALL_SLOTS.indexOf(a.slotId)-ALL_SLOTS.indexOf(b.slotId));
-  if(!cms.length) return null;
   const dayGroups = {};
   cms.forEach(m=>{const d=slotDay(m.slotId);if(!dayGroups[d])dayGroups[d]=[];dayGroups[d].push(m);});
-  const sections = DAYS.filter(d=>dayGroups[d]).map(d=>({
+  // Include days that have dinners even if no meetings
+  const activeDays = DAYS.filter(d=>dayGroups[d]||dinners.some(din=>din.day===d));
+  if(!activeDays.length) return null;
+  const sections = activeDays.map(d=>({
     dayLabel: DAY_LONG[d],
     headerCols:["Time","Company","Sector","Type","Room"],
-    rows: dayGroups[d].map(m=>{
-      const co=companies.find(c=>c.id===m.coId);
-      const mType=(m.invIds||[]).length>1?"Group":"1x1";
-      return {time:hourLabel(slotHour(m.slotId)),col1:co?.name||m.coId,col1b:co?.ticker,col1c:null,
-        col2:co?.sector||"",col3:mType,col4:m.room};
-    })
+    rows: [
+      ...(dayGroups[d]||[]).map(m=>{
+        const co=companies.find(c=>c.id===m.coId);
+        const mType=(m.invIds||[]).length>1?"Group":"1x1";
+        return {time:hourLabel(slotHour(m.slotId)),col1:co?.name||m.coId,col1b:co?.ticker,col1c:null,
+          col2:co?.sector||"",col3:mType,col4:m.room};
+      }),
+      ...dinners.filter(din=>din.day===d).map(din=>({
+        time:DINNER_HOUR_LABEL,
+        col1:din.name||"Conference Dinner",
+        col1b:din.restaurant||null,
+        col1c:null,
+        col2:"",
+        col3:"Dinner",
+        col4:din.address||"",
+        isDinner:true,
+      })),
+    ]
   }));
   return {
     name: inv.name,
@@ -943,6 +966,7 @@ export default function App(){
   const [unscheduled,setUnscheduled]=useState([]);
   const [fixedRoom,setFixedRoom]=useState({});
   const [fundGrouping,setFundGrouping]=useState({});// fund→bool (true=grouped)
+  const [dinners,setDinners]=useState(DINNERS_INIT);
   const [activeDay,setActiveDay]=useState("apr14");
   const [search,setSearch]=useState("");
   const [fileName,setFileName]=useState("");
@@ -1006,7 +1030,7 @@ export default function App(){
   };
 
   function exportInvestor(inv,format){
-    const data=investorToExportData(inv,meetings,companies);
+    const data=investorToExportData(inv,meetings,companies,dinners);
     if(!data){alert("Este inversor no tiene reuniones asignadas.");return;}
     const fname=`${inv.fund||inv.name}_${inv.name.replace(/\s+/g,"_")}`.replace(/[^a-zA-Z0-9_\-]/g,"");
     if(format==="word"){
@@ -1035,7 +1059,7 @@ export default function App(){
     if(scope==="companies"){
       entities=companies.map(co=>companyToExportData(co,meetings,investors)).filter(Boolean);
     } else {
-      entities=investors.map(inv=>investorToExportData(inv,meetings,companies)).filter(Boolean);
+      entities=investors.map(inv=>investorToExportData(inv,meetings,companies,dinners)).filter(Boolean);
     }
     if(!entities.length){alert("No hay datos para exportar.");return;}
 
@@ -1427,6 +1451,33 @@ export default function App(){
           <div>
             <h2 className="pg-h">Exportar Schedules</h2>
             <p className="pg-s">Genera schedules individuales o en masa — formato Word (.doc) o PDF.</p>
+
+            {/* ── Dinner Config ── */}
+            <div style={{marginBottom:20}} className="card">
+              <div className="card-t">🍽 Cenas / Dinners</div>
+              <p style={{fontSize:12,color:"var(--dim)",marginBottom:14}}>Configurá los datos de las cenas para que aparezcan en los schedules de los inversores.</p>
+              {dinners.map(din=>(
+                <div key={din.id} style={{marginBottom:16,padding:"12px 14px",background:"var(--ink3)",borderRadius:8,border:"1px solid rgba(255,255,255,.07)"}}>
+                  <div style={{fontSize:11,color:"var(--gold)",fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",marginBottom:10}}>
+                    {DAY_LONG[din.day]}
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                    <label style={{display:"flex",flexDirection:"column",gap:4}}>
+                      <span style={{fontSize:11,color:"var(--dim)"}}>Nombre del evento</span>
+                      <input className="inp" value={din.name} onChange={e=>setDinners(prev=>prev.map(d=>d.id===din.id?{...d,name:e.target.value}:d))} placeholder="Conference Dinner"/>
+                    </label>
+                    <label style={{display:"flex",flexDirection:"column",gap:4}}>
+                      <span style={{fontSize:11,color:"var(--dim)"}}>Restaurante</span>
+                      <input className="inp" value={din.restaurant} onChange={e=>setDinners(prev=>prev.map(d=>d.id===din.id?{...d,restaurant:e.target.value}:d))} placeholder="The Lambs Club"/>
+                    </label>
+                  </div>
+                  <label style={{display:"flex",flexDirection:"column",gap:4}}>
+                    <span style={{fontSize:11,color:"var(--dim)"}}>Dirección</span>
+                    <input className="inp" value={din.address} onChange={e=>setDinners(prev=>prev.map(d=>d.id===din.id?{...d,address:e.target.value}:d))} placeholder="132 W 44th St, New York, NY"/>
+                  </label>
+                </div>
+              ))}
+            </div>
 
             {!scheduled&&<div className="alert aw">Generá la agenda primero para poder exportar.</div>}
 
